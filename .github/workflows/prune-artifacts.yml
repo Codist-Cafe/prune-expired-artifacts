@@ -1,0 +1,55 @@
+name: Prune expired artifacts
+
+# Reclaims Actions artifact storage by deleting artifacts already past their
+# `expires_at`. See scripts/prune-expired-artifacts.sh for the full rationale.
+#
+# ── Setup for a new repo ──────────────────────────────────────────────────────
+# Copy this file to .github/workflows/ and the script to scripts/ in the target
+# repo, then `chmod +x scripts/prune-expired-artifacts.sh`. Nothing else is
+# required — no secrets, no configuration.
+#
+# The default GITHUB_TOKEN can delete artifacts in its own repo, so no PAT or
+# secret is needed. Set the `schedule` cron (or remove it) to taste.
+
+on:
+  schedule:
+    # 03:17 UTC daily. Off the hour deliberately: GitHub's scheduler queues
+    # behind load at :00, and 03:00-05:00 UTC is the low point for Actions load.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would be deleted, without deleting it"
+        type: boolean
+        default: true
+
+permissions:
+  # actions:write is required to DELETE artifacts. Scoped to this job rather than
+  # granted repo-wide, so no other job gains deletion capability.
+  actions: write
+  contents: read
+
+jobs:
+  prune:
+    name: Delete artifacts past expires_at
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prune expired artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # workflow_dispatch may pass dry_run=true; scheduled runs never do, so
+          # an unset input falls through to '0' (delete).
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          ./scripts/prune-expired-artifacts.sh "$REPO"
+
+      - name: Note the impact on failure
+        if: failure()
+        run: |
+          echo "::warning::Artifact pruning failed. Until it succeeds, upload-artifact"
+          echo "::warning::steps may fail with 'Artifact storage quota has been hit'."
+          echo "::warning::Check the run log above for the per-artifact failures."
