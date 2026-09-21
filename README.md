@@ -65,6 +65,7 @@ Prune a different repo without cloning it:
   owner/repo           Prune that repo
   DRY_RUN=1            Report only — delete nothing
   INCLUDE_ACTIVE=1     Also delete artifacts still inside their retention window
+  MAX_STORAGE_MB=500   Your plan's artifact storage limit (default 500 = Free)
 ```
 
 Typical output:
@@ -79,11 +80,19 @@ Scope      : expired only
   expired        3 artifacts         38.8 MB   <- reclaimable
   active         1 artifacts          0.2 MB   <- inside retention window
 
-── Result ───────────────────────────────────────────────────
-  deleted        3 artifacts         38.8 MB reclaimed
+── Deleted artifacts ──────────────────────────────────────────
 
-── After prune ──────────────────────────────────────────────
-  remaining      1 artifacts          0.2 MB
+  ID                   SIZE  EXPIRED AT              NAME
+  ------------ ------------  ----------------------  ----
+  10355646589        0.7 MB  2026-09-21T15:33:01Z    playwright-report
+
+── Summary ──────────────────────────────────────────────────
+  max storage               500 MB
+  usage before             39.0 MB   (7.8% of max)
+  saved                    38.8 MB   (3 artifacts deleted)
+  usage after               0.2 MB   (0.0% of max)
+
+  Headroom: 499.8 MB below the 500 MB limit.
 
 Note: artifact storage is shared across the whole account/org, not per-repo,
 so other repos' artifacts count against the same limit. This script prunes
@@ -94,7 +103,66 @@ only the repo named above; pass another as $1 to prune that one too.
 
 ---
 
-## Safety
+## The report
+
+Both modes end with a summary giving **max storage**, **current usage**, the amount **saved**, and the **size remaining** — plus a per-artifact listing naming exactly what was (or would be) deleted.
+
+### `DRY_RUN=1` — nothing is deleted
+
+```
+DRY RUN — the following artifacts WOULD be deleted:
+
+  ID                   SIZE  EXPIRED AT              NAME
+  ------------ ------------  ----------------------  ----
+  4546051500        21.7 MB  2026-02-10T16:59:02Z    function-app
+  4454406537        21.1 MB  2026-02-01T21:04:15Z    function-app
+
+── Summary (dry run — nothing was deleted) ──────────────────
+  max storage               500 MB
+  current usage           415.8 MB   (83.2% of max)
+  would be saved          129.6 MB   (6 artifacts)
+  after cleanup           286.2 MB   (57.2% of max)
+
+  Re-run without DRY_RUN=1 to delete.
+```
+
+### Real run
+
+```
+── Deleted artifacts ──────────────────────────────────────────
+
+  ID                   SIZE  EXPIRED AT              NAME
+  ------------ ------------  ----------------------  ----
+  4546051500        21.7 MB  2026-02-10T16:59:02Z    function-app
+  4454406537        21.1 MB  2026-02-01T21:04:15Z    function-app
+
+── Summary ──────────────────────────────────────────────────
+  max storage               500 MB
+  usage before            415.8 MB   (83.2% of max)
+  saved                   129.6 MB   (6 artifacts deleted)
+  usage after             286.2 MB   (57.2% of max)
+
+  Headroom: 213.8 MB below the 500 MB limit.
+```
+
+If usage is still above the limit after a run, the summary says so and points you at the other repos sharing the quota.
+
+### About `MAX_STORAGE_MB`
+
+The limit defaults to **500** (GitHub Free) and only affects the reported percentages and headroom — it never changes what is deleted. Set it to your plan's figure:
+
+| Plan | `MAX_STORAGE_MB` |
+|---|---|
+| Free | `500` *(default)* |
+| Pro | `1024` |
+| Team | `2048` |
+| Enterprise Cloud | `51200` |
+
+```bash
+MAX_STORAGE_MB=2048 ./scripts/prune-expired-artifacts.sh
+```
+
+Why is this an input rather than something the script detects? Because it cannot. GitHub's billing API no longer exposes the storage limit — the old `/orgs/{org}/settings/billing/*` endpoints now return **HTTP 410 Gone** — so any "detected" number would be a guess. An explicit input is honest about that.
 
 Deleting an artifact is **permanent** — GitHub does not provide a recovery path. The defaults reflect that:
 
@@ -184,6 +252,9 @@ No. The `GITHUB_TOKEN` created for each workflow run can delete artifacts in its
 
 **Does it work for organizations, or only personal accounts?**
 Both. Storage limits and shared accounting apply to the account or organization that owns the repos.
+
+**Why is `MAX_STORAGE_MB` not detected automatically?**
+Because GitHub's billing API no longer exposes it. The former `/settings/billing/actions` and `/settings/billing/shared-storage` endpoints return HTTP 410 Gone, and the replacement requires `admin:org` scope for a figure that GitHub also surfaces inconsistently. The script prints the figure you give it rather than inventing a plausible-looking one — it only affects the reported percentages, never what gets deleted.
 
 ---
 

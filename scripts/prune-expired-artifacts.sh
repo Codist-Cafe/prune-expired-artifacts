@@ -40,6 +40,10 @@
 #   DRY_RUN=1 ./prune-expired-artifacts.sh          # report only, delete nothing
 #   INCLUDE_ACTIVE=1 ./prune-expired-artifacts.sh   # also delete live artifacts
 #
+# Both modes end with a summary report: max storage, current usage, the amount
+# saved, and the size remaining. Set MAX_STORAGE_MB to match your plan (default
+# 500, i.e. GitHub Free) so the headroom figures are accurate.
+#
 # Exit codes: 0 = success (including "nothing to do"), 1 = an error occurred.
 
 set -euo pipefail
@@ -51,6 +55,11 @@ fi
 
 DRY_RUN="${DRY_RUN:-0}"
 INCLUDE_ACTIVE="${INCLUDE_ACTIVE:-0}"
+# Storage limit used only to report headroom. GitHub's billing API no longer
+# exposes this (the old /settings/billing/* endpoints return HTTP 410), and the
+# limit varies by plan — Free 500 MB, Pro 1 GB, Team 2 GB, Enterprise 50 GB — so
+# it is an input rather than a guess. Override with MAX_STORAGE_MB.
+MAX_STORAGE_MB="${MAX_STORAGE_MB:-500}"
 API_VERSION_HEADER="X-GitHub-Api-Version: 2022-11-28"
 
 command -v gh >/dev/null 2>&1 || { echo "error: gh CLI is required." >&2; exit 1; }
@@ -122,6 +131,10 @@ done <<< "$artifacts_tsv"
 # Bytes -> MB, one decimal. awk avoids depending on bc.
 mb() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1048576 }'; }
 
+# Render a "used / max (pct%)" cell for the report table.
+pct() { awk -v u="$1" -v m="$2" 'BEGIN { if (m > 0) printf "%.1f%%", (u / m) * 100; else print "n/a" }'; }
+max_bytes() { awk -v m="$1" 'BEGIN { printf "%.0f", m * 1048576 }'; }
+
 echo "── Inventory ────────────────────────────────────────────────"
 printf '  total      %5d artifacts   %10s MB\n' "$total_count" "$(mb "$total_bytes")"
 printf '  expired    %5d artifacts   %10s MB   <- reclaimable\n' "$expired_count" "$(mb "$expired_bytes")"
@@ -135,35 +148,59 @@ fi
 
 # ── Report-only mode ──────────────────────────────────────────────────────────
 if [ "$DRY_RUN" = "1" ]; then
-  echo "DRY RUN — would delete:"
+  echo "DRY RUN — the following artifacts WOULD be deleted:"
+  echo
+  printf '  %-12s %12s  %-22s  %s\n' "ID" "SIZE" "EXPIRED AT" "NAME"
+  printf '  %-12s %12s  %-22s  %s\n' "------------" "------------" "----------------------" "----"
   while IFS=$'\t' read -r id name size expires; do
     [ -n "${id:-}" ] || continue
-    printf '  %-12s %10s MB  expired %s  %s\n' "$id" "$(mb "$size")" "$expires" "$name"
+    printf '  %-12s %9s MB  %-22s  %s\n' "$id" "$(mb "$size")" "$expires" "$name"
   done <<< "$targets"
   echo
-  echo "Would reclaim $(mb "$(printf '%s' "$targets" | awk -F'\t' 'NF {s+=$3} END {print s+0}')") MB."
-  echo "Re-run without DRY_RUN=1 to delete."
+
+  projected=$(printf '%s' "$targets" | awk -F'\t' 'NF {s+=$3} END {print s+0}')
+  final_bytes=$((total_bytes - projected))
+
+  echo "── Summary (dry run — nothing was deleted) ──────────────────"
+  printf '  max storage      %12s MB\n' "$MAX_STORAGE_MB"
+  printf '  current usage    %12s MB   (%s of max)\n' "$(mb "$total_bytes")" "$(pct "$total_bytes" "$(max_bytes "$MAX_STORAGE_MB")")"
+  printf '  would be saved   %12s MB   (%d artifacts)\n' "$(mb "$projected")" "$(printf '%s' "$targets" | awk -F'\t' 'NF {n++} END {print n+0}')"
+  printf '  after cleanup    %12s MB   (%s of max)\n' "$(mb "$final_bytes")" "$(pct "$final_bytes" "$(max_bytes "$MAX_STORAGE_MB")")"
+  echo
+  echo "  Re-run without DRY_RUN=1 to delete."
   exit 0
 fi
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 deleted=0; failed=0; reclaimed=0; failures=""
+deleted_list=""
 
 while IFS=$'\t' read -r id name size expires; do
   [ -n "${id:-}" ] || continue
   if gh api -X DELETE --header "$API_VERSION_HEADER" \
        "repos/$REPO/actions/artifacts/$id" >/dev/null 2>&1; then
     deleted=$((deleted + 1)); reclaimed=$((reclaimed + size))
+    deleted_list="${deleted_list}${id}"$'\t'"${name}"$'\t'"${size}"$'\t'"${expires}"$'\n'
   else
     failed=$((failed + 1))
     failures="${failures}  ${id}  ${name}  (expired ${expires})"$'\n'
   fi
 done <<< "$targets"
 
-echo "── Result ───────────────────────────────────────────────────"
-printf '  deleted    %5d artifacts   %10s MB reclaimed\n' "$deleted" "$(mb "$reclaimed")"
+echo "── Deleted $( [ "$deleted" -eq 1 ] && echo 'artifact' || echo 'artifacts' ) ──────────────────────────────────────────"
+if [ "$deleted" -gt 0 ]; then
+  echo
+  printf '  %-12s %12s  %-22s  %s\n' "ID" "SIZE" "EXPIRED AT" "NAME"
+  printf '  %-12s %12s  %-22s  %s\n' "------------" "------------" "----------------------" "----"
+  while IFS=$'\t' read -r id name size expires; do
+    [ -n "${id:-}" ] || continue
+    printf '  %-12s %9s MB  %-22s  %s\n' "$id" "$(mb "$size")" "$expires" "$name"
+  done <<< "$deleted_list"
+  echo
+fi
+
 if [ "$failed" -gt 0 ]; then
-  printf '  FAILED     %5d artifacts\n' "$failed"
+  printf '  FAILED     %5d artifacts (not deleted)\n' "$failed"
   echo "$failures"
   echo "::error::Failed to delete $failed artifact(s) — see the list above." >&2
   exit 1
@@ -182,8 +219,20 @@ while IFS=$'\t' read -r id size; do
 done <<< "${remaining_tsv:-}"
 
 echo
-echo "── After prune ──────────────────────────────────────────────"
-printf '  remaining  %5d artifacts   %10s MB\n' "$remaining_count" "$(mb "$remaining_bytes")"
+echo "── Summary ──────────────────────────────────────────────────"
+printf '  max storage      %12s MB\n' "$MAX_STORAGE_MB"
+printf '  usage before     %12s MB   (%s of max)\n' "$(mb "$total_bytes")" "$(pct "$total_bytes" "$(max_bytes "$MAX_STORAGE_MB")")"
+printf '  saved            %12s MB   (%d artifacts deleted)\n' "$(mb "$reclaimed")" "$deleted"
+printf '  usage after      %12s MB   (%s of max)\n' "$(mb "$remaining_bytes")" "$(pct "$remaining_bytes" "$(max_bytes "$MAX_STORAGE_MB")")"
+echo
+if [ "$remaining_bytes" -lt "$(max_bytes "$MAX_STORAGE_MB")" ]; then
+  printf '  Headroom: %s MB below the %s MB limit.\n' \
+    "$(mb $(( $(max_bytes "$MAX_STORAGE_MB") - remaining_bytes )))" "$MAX_STORAGE_MB"
+else
+  printf '  STILL OVER the %s MB limit by %s MB.\n' \
+    "$MAX_STORAGE_MB" "$(mb $(( remaining_bytes - $(max_bytes "$MAX_STORAGE_MB") )))"
+  echo "  Storage is shared across the account, so check other repos too."
+fi
 echo
 echo "Note: artifact storage is shared across the whole account/org, not per-repo,"
 echo "so other repos' artifacts count against the same limit. This script prunes"
