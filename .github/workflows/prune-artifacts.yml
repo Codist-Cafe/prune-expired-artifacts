@@ -45,6 +45,20 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      self_repo:
+        description: >-
+          Where the prune script lives: owner/repo. Defaults to this repo. Only
+          override if this repo is renamed, moved, or forked.
+        type: string
+        required: false
+        default: Codist-Cafe/prune-expired-artifacts
+      self_ref:
+        description: >-
+          Git ref of self_repo to check out. Defaults to main. Pin to a tag or SHA
+          for an immutable, reproducible prune.
+        type: string
+        required: false
+        default: main
 
 permissions:
   # actions:write is required to DELETE artifacts. Scoped to this job rather than
@@ -61,33 +75,22 @@ jobs:
     # automatically — the label must be named explicitly by the caller.
     runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
     steps:
-      # IMPORTANT: check out THIS repo, not the caller's.
+      # IMPORTANT: the script lives in THIS repo, but a reusable workflow's
+      # `actions/checkout` defaults to the CALLER's repository. Two things that
+      # look like they would fix this do NOT:
+      #   - `github.repository`  -> the caller
+      #   - `github.workflow_ref` -> ALSO the caller (verified 2026-09-21: it
+      #     resolved to Codist-Cafe/Abide-ID-2026, the caller, not this repo)
       #
-      # When a reusable workflow runs, `actions/checkout` defaults to the CALLER's
-      # repository (github.repository is the caller). Pruning lives here, so a
-      # default checkout finds no `scripts/prune-expired-artifacts.sh` in a caller
-      # that does not vendor it — failing with exit 127, "No such file or
-      # directory". Observed 2026-09-21 against Codist-Cafe/Abide-ID-2026, which
-      # had deleted its vendored copy.
-      #
-      # `github.workflow_ref` is "<owner>/<repo>/.github/workflows/<file>@<ref>", so
-      # parsing it pins the checkout to this repo AND the exact ref the caller
-      # invoked. Falls back to this repo's default branch for schedule and
-      # workflow_dispatch runs, where workflow_ref is not set the same way.
+      # So the location is pinned explicitly rather than inferred. `self_repo`
+      # defaults to this repo and only needs overriding if the repo is renamed,
+      # moved, or forked. `self_ref` defaults to the ref the caller invoked.
       - name: Resolve the workflow's own repository
         id: self
         run: |
-          ref="${{ github.workflow_ref }}"
-          if [ -n "$ref" ]; then
-            repo="${ref%%/.github/workflows/*}"
-            sha="${ref##*@}"
-          else
-            repo="${{ github.repository }}"
-            sha="${{ github.sha }}"
-          fi
-          echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "ref=$sha"  >> "$GITHUB_OUTPUT"
-          echo "checking out $repo@$sha"
+          echo "repo=${{ inputs.self_repo || 'Codist-Cafe/prune-expired-artifacts' }}" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ inputs.self_ref || 'main' }}" >> "$GITHUB_OUTPUT"
+          echo "checking out ${{ inputs.self_repo || 'Codist-Cafe/prune-expired-artifacts' }}@${{ inputs.self_ref || 'main' }}"
 
       - uses: actions/checkout@v5
         with:
