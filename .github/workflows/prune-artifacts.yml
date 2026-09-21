@@ -36,6 +36,15 @@ on:
         description: "Your plan's artifact storage limit in MB (Free 500, Pro 1024, Team 2048)"
         type: number
         default: 500
+      runs_on:
+        description: >-
+          Runner label for the prune job. Defaults to ubuntu-latest (GitHub-hosted).
+          Set to a self-hosted label (e.g. 'abideid-dev') to avoid GitHub-hosted
+          Actions minutes — useful when billing blocks GitHub-hosted jobs, since
+          self-hosted runners are not billed and are unaffected.
+        type: string
+        required: false
+        default: ubuntu-latest
 
 permissions:
   # actions:write is required to DELETE artifacts. Scoped to this job rather than
@@ -46,9 +55,33 @@ permissions:
 jobs:
   prune:
     name: Delete artifacts past expires_at
-    runs-on: ubuntu-latest
+    # Defaults to ubuntu-latest. A caller may pass a self-hosted label via the
+    # `runs_on` input; this job needs only `gh` + `jq`, so any Linux runner works.
+    # Note: a reusable workflow cannot fall back to the caller's runner
+    # automatically — the label must be named explicitly by the caller.
+    runs-on: ${{ inputs.runs_on || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
+
+      # Fail loudly with an actionable message if a self-hosted runner lacks a
+      # dependency, rather than dying obscurely inside the script.
+      - name: Check dependencies
+        run: |
+          set -euo pipefail
+          missing=""
+          command -v gh  >/dev/null 2>&1 || missing="$missing gh"
+          command -v jq  >/dev/null 2>&1 || missing="$missing jq"
+          # GNU date is required; BSD date (macOS) lacks -d. gdate is accepted.
+          if ! date -u -d "@0" +%s >/dev/null 2>&1 && ! command -v gdate >/dev/null 2>&1; then
+            missing="$missing GNU-date"
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::Runner '${{ inputs.runs_on || 'ubuntu-latest' }}' is missing:$missing"
+            echo "Install these on the runner (or omit the runs_on input to use"
+            echo "ubuntu-latest, which has all three preinstalled)."
+            exit 1
+          fi
+          echo "dependencies present: gh, jq, $(date --version >/dev/null 2>&1 && echo 'GNU date' || echo 'gdate')"
 
       - name: Prune expired artifacts
         env:

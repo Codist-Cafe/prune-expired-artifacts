@@ -188,7 +188,9 @@ Then commit. That's the whole setup — no secrets, no variables.
 
 The workflow runs daily at **03:17 UTC** and can also be triggered by hand from **Actions → Prune expired artifacts → Run workflow**, with a `dry_run` toggle that defaults to `true`.
 
-Why `03:17` and not `03:00`? GitHub's scheduler queues behind load on the hour, so off-hour crons fire closer to their scheduled time. It's also why the job runs on `ubuntu-latest` rather than any self-hosted runner — housekeeping shouldn't queue behind your test suites.
+Why `03:17` and not `03:00`? GitHub's scheduler queues behind load on the hour, so off-hour crons fire closer to their scheduled time.
+
+The default runner is `ubuntu-latest`, on the reasoning that housekeeping shouldn't queue behind your test suites on a shared self-hosted runner. That default is wrong in one situation, though: if GitHub-hosted Actions is billing-blocked, every `ubuntu-latest` job refuses to start. See [Running on a self-hosted runner](#running-on-a-self-hosted-runner) to switch.
 
 ### Using it as a reusable workflow
 
@@ -201,6 +203,34 @@ jobs:
 ```
 
 Add `permissions: { actions: write, contents: read }` to the calling job. Note that the **calling** repo's artifacts are pruned in that case, because the reusable workflow receives the caller's `github.repository`.
+
+Optional inputs:
+
+| Input | Default | Purpose |
+|---|---|---|
+| `dry_run` | `false` | Report only; delete nothing |
+| `max_storage_mb` | `500` | Your plan's limit, used for the reported percentages |
+| `runs_on` | `ubuntu-latest` | Runner label for the job |
+
+### Running on a self-hosted runner
+
+GitHub-hosted jobs (`ubuntu-latest`) consume the account's included Actions minutes, and **when that billing is blocked, every GitHub-hosted job refuses to start** — the run fails in seconds with no steps executed:
+
+```
+The job was not started because recent account payments have failed
+or your spending limit needs to be increased.
+```
+
+Self-hosted runners are **not billed**, so they are unaffected. Pass a self-hosted label to keep pruning working through a billing problem:
+
+```yaml
+    with:
+      runs_on: your-self-hosted-label
+```
+
+The runner needs only `gh`, `jq`, and GNU `date` (or `gdate`). The workflow checks for all three up front and fails with a clear message naming what is missing, rather than dying obscurely inside the script.
+
+A reusable workflow cannot pick up the caller's runner automatically — if you want self-hosted, you must name the label.
 
 ---
 
