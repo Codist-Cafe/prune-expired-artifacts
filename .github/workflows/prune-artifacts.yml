@@ -22,6 +22,20 @@ on:
         description: "Report what would be deleted, without deleting it"
         type: boolean
         default: true
+  # Lets another repo reuse this instead of vendoring a copy:
+  #   jobs:
+  #     prune:
+  #       uses: Codist-Cafe/prune-expired-artifacts/.github/workflows/prune-artifacts.yml@main
+  workflow_call:
+    inputs:
+      dry_run:
+        description: "Report what would be deleted, without deleting it"
+        type: boolean
+        default: false
+      max_storage_mb:
+        description: "Your plan's artifact storage limit in MB (Free 500, Pro 1024, Team 2048)"
+        type: number
+        default: 500
 
 permissions:
   # actions:write is required to DELETE artifacts. Scoped to this job rather than
@@ -40,9 +54,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          # workflow_dispatch may pass dry_run=true; scheduled runs never do, so
-          # an unset input falls through to '0' (delete).
-          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          # Precedence: an explicit workflow_call input wins; workflow_dispatch
+          # falls back to its own input; a scheduled run has neither and deletes.
+          DRY_RUN: ${{ (inputs.dry_run || github.event.inputs.dry_run == 'true') && '1' || '0' }}
+          MAX_STORAGE_MB: ${{ inputs.max_storage_mb || 500 }}
         run: |
           set -euo pipefail
           ./scripts/prune-expired-artifacts.sh "$REPO"
