@@ -59,6 +59,17 @@ on:
         type: string
         required: false
         default: main
+      timeout_minutes:
+        description: >-
+          Hard cap on the prune job. A healthy run finishes in well under a minute,
+          but without a cap a hung job holds its runner indefinitely and — when the
+          job is pinned to a self-hosted label — blocks EVERY other job in the repo
+          that needs that runner. (Observed 2026-09-23: an unbounded run sat for 6+
+          hours and wedged all CI in the calling repo; it had to be cancelled by
+          hand.) Raise this only if a legitimately large backlog needs longer.
+        type: number
+        required: false
+        default: 20
 
 permissions:
   # actions:write is required to DELETE artifacts. Scoped to this job rather than
@@ -69,6 +80,10 @@ permissions:
 jobs:
   prune:
     name: Delete artifacts past expires_at
+    # A successful run takes ~10s (measured across 2026-09-21..23: 7-16s). The cap
+    # exists so a HANG releases the runner instead of monopolising it forever —
+    # see the timeout_minutes input docs. 20 minutes is ~100x the normal runtime.
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
     # Defaults to ubuntu-latest. A caller may pass a self-hosted label via the
     # `runs_on` input; this job needs only `gh` + `jq`, so any Linux runner works.
     # Note: a reusable workflow cannot fall back to the caller's runner
